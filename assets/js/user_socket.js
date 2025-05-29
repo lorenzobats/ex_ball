@@ -1,0 +1,228 @@
+// NOTE: The contents of this file will only be executed if
+// you uncomment its entry in "assets/js/app.js".
+
+// Bring in Phoenix channels client library:
+import {Socket} from "phoenix"
+
+// And connect to the path in "lib/ex_ball_web/endpoint.ex". We pass the
+// token for authentication. Read below how it should be used.
+let socket = new Socket("/socket", {params: {token: window.userToken}})
+
+// When you connect, you'll often need to authenticate the client.
+// For example, imagine you have an authentication plug, `MyAuth`,
+// which authenticates the session and assigns a `:current_user`.
+// If the current user exists you can assign the user's token in
+// the connection for use in the layout.
+//
+// In your "lib/ex_ball_web/router.ex":
+//
+//     pipeline :browser do
+//       ...
+//       plug MyAuth
+//       plug :put_user_token
+//     end
+//
+//     defp put_user_token(conn, _) do
+//       if current_user = conn.assigns[:current_user] do
+//         token = Phoenix.Token.sign(conn, "user socket", current_user.id)
+//         assign(conn, :user_token, token)
+//       else
+//         conn
+//       end
+//     end
+//
+// Now you need to pass this token to JavaScript. You can do so
+// inside a script tag in "lib/ex_ball_web/templates/layout/app.html.heex":
+//
+//     <script>window.userToken = "<%= assigns[:user_token] %>";</script>
+//
+// You will need to verify the user token in the "connect/3" function
+// in "lib/ex_ball_web/channels/user_socket.ex":
+//
+//     def connect(%{"token" => token}, socket, _connect_info) do
+//       # max_age: 1209600 is equivalent to two weeks in seconds
+//       case Phoenix.Token.verify(socket, "user socket", token, max_age: 1_209_600) do
+//         {:ok, user_id} ->
+//           {:ok, assign(socket, :user, user_id)}
+//
+//         {:error, reason} ->
+//           :error
+//       end
+//     end
+//
+// Finally, connect to the socket:
+socket.connect()
+
+// Now that you are connected, you can join channels with a topic:
+let channel = socket.channel("room:lobby", {})
+
+channel.on("new_msg", payload => {
+  let messageItem = document.createElement("p")
+  messageItem.innerText = `[${Date()}] ${payload.body}`
+  messagesContainer.appendChild(messageItem)
+})
+
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+
+// Ball properties
+const ball = {
+  x: canvas.width / 2,
+  y: canvas.height / 2,
+  radius: 20,
+  vx: 0,
+  vy: 0,
+  ax: 0,
+  ay: 0,
+  maxSpeed: 10,
+  acceleration: 0.6,
+  friction: 0.9,
+  visible: true,
+  current_side: "right"
+};
+
+channel.on("ball_exit", payload => {
+  console.log(payload)
+  if (payload.direction == "left" &&  ball.current_side == "left") {
+    ball.current_side = "right"
+    ball.x = payload.x
+    ball.y = canvas.width - ball.radius
+    ball.ax = payload.ax
+    ball.ay = payload.ay
+  }
+  
+  if (payload.direction == "left" &&  ball.current_side == "right") {
+    ball.current_side = "left"
+    ball.x = canvas.width - ball.radius - 1 
+    ball.y = payload.y
+    ball.ax = payload.ax
+    ball.ay = payload.ay
+  }
+
+  if (payload.direction == "right" &&  ball.current_side == "left") {
+    ball.current_side = "right"
+    ball.x = payload.x
+    ball.y = 0 + ball.radius
+    ball.ax = payload.ax
+    ball.ay = payload.ay
+  }
+
+  if (payload.direction == "right" &&  ball.current_side == "right") {
+    ball.current_side = "left"
+    ball.x = payload.x
+    ball.y = 0 + ball.radius
+    ball.ax = payload.ax
+    ball.ay = payload.ay
+  }
+})
+
+channel.join()
+  .receive("ok", resp => { console.log("Joined successfully", resp) })
+  .receive("error", resp => { console.log("Unable to join", resp) })
+
+let player_side = "left";
+
+document.getElementById("left-player").addEventListener("click", function() {
+  player_side = "left"
+})
+
+document.getElementById("right-player").addEventListener("click", function() {
+  player_side = "right"
+})
+
+
+// Resize canvas to fill the window
+function resizeCanvas() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+
+window.addEventListener("resize", resizeCanvas);
+resizeCanvas();
+
+
+const keys = {
+  w: false,
+  a: false,
+  s: false,
+  d: false
+};
+
+window.addEventListener("keydown", (e) => {
+  if (e.key in keys) keys[e.key] = true;
+});
+
+window.addEventListener("keyup", (e) => {
+  if (e.key in keys) keys[e.key] = false;
+});
+
+function update() {
+  // Apply acceleration
+  if (keys.w) ball.ay = -ball.acceleration;
+  else if (keys.s) ball.ay = ball.acceleration;
+  else ball.ay = 0;
+
+  if (keys.a) ball.ax = -ball.acceleration;
+  else if (keys.d) ball.ax = ball.acceleration;
+  else ball.ax = 0;
+
+  // Update velocity with acceleration
+  ball.vx += ball.ax;
+  ball.vy += ball.ay;
+
+  // Apply friction
+  ball.vx *= ball.friction;
+  ball.vy *= ball.friction;
+
+  // Clamp speed
+  ball.vx = Math.max(-ball.maxSpeed, Math.min(ball.vx, ball.maxSpeed));
+  ball.vy = Math.max(-ball.maxSpeed, Math.min(ball.vy, ball.maxSpeed));
+
+  // Update position
+  ball.x += ball.vx;
+  ball.y += ball.vy;
+
+  // Keep the ball in bounds
+  ball.x = Math.max(ball.radius, Math.min(canvas.width - ball.radius, ball.x));
+  ball.y = Math.max(ball.radius, Math.min(canvas.height - ball.radius, ball.y));
+  if (ball.x == canvas.width - ball.radius) {
+    console.log('right boarder touched')
+  }
+    
+  if (ball.x == 0 + ball.radius) {
+    console.log('left boarder touched', ball.current_side, player_side)
+    if (ball.current_side === player_side) {
+      channel.push('ball_exit', {direction: 'left', x: ball.x, y: ball.y, ax: ball.ax, ay: ball.ay})
+    }
+
+  }
+
+  if (ball.y == canvas.height - ball.radius) {
+    console.log('bottom boarder touched')
+  }
+    
+  if (ball.y == 0 + ball.radius) {
+    console.log('top boarder touched')
+  }
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (ball.current_side != player_side) return; // Do not draw if hidden
+  // Draw the ball
+  ctx.beginPath();
+  ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+  ctx.fillStyle = "#00f2ff";
+  ctx.fill();
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+loop();
+
+export default socket
